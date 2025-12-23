@@ -1,59 +1,23 @@
-# OBS Plugin Template
+# OBS PipeWire Video Source
 
-## Introduction
+This source is a fork of the OBS PipeWire video code (used for screen/window capture on Wayland and PipeWire webcam capture), modified to work as a generic video source. It is the video counterpart to the JACK audio source, and serves a similar purpose as the Spout2 and Syphon sources on Windows and macOS, respectively.
 
-The plugin template is meant to be used as a starting point for OBS Studio plugin development. It includes:
+It is designed to work with apps that can send video using PipeWire, such as those using [libfunnel](https://github.com/hoshinolina/libfunnel/).
 
-* Boilerplate plugin source code
-* A CMake project file
-* GitHub Actions workflows and repository actions
+This fork also serves as a testbed for improvements to the OBS PipeWire code, which can hopefully be upstreamed over time.
 
-## Supported Build Environments
+## Differences with the built-in OBS PipeWire support
 
-| Platform  | Tool   |
-|-----------|--------|
-| Windows   | Visual Studio 17 2022 |
-| macOS     | XCode 16.0 |
-| Windows, macOS  | CMake 3.30.5 |
-| Ubuntu 24.04 | CMake 3.28.3 |
-| Ubuntu 24.04 | `ninja-build` |
-| Ubuntu 24.04 | `pkg-config`
-| Ubuntu 24.04 | `build-essential` |
+* No portals used/required (this still works in Flatpak as the Flatpak already has PipeWire permissions to support the JACK source)
+* Improved PipeWire video support (bugfixes, support for double buffering, and lazy mode for pull-based frame pacing)
+* Support for selecting arbitrary PipeWire video sources and auto-reconnect without user action (WIP)
 
-## Quick Start
+## Why not portals?
 
-An absolute bare-bones [Quick Start Guide](https://github.com/obsproject/obs-plugintemplate/wiki/Quick-Start-Guide) is available in the wiki.
+Portals are a great concept. Unfortunately, xdg-desktop-portal doesn't really support this use case currently, and it would require multiple changes to work well:
 
-## Documentation
+* Implementation of [App to App Media Sharing](https://github.com/flatpak/xdg-desktop-portal/discussions/1141)
+* A refactor of session resume to be more robust and reliable (the current approach is not appropriate for professional streaming setups)
+* Support for a coarse-permissioned "user-managed" mode for power users who wish to manage video stream connections manually (e.g. with qpwgraph)
 
-All documentation can be found in the [Plugin Template Wiki](https://github.com/obsproject/obs-plugintemplate/wiki).
-
-Suggested reading to get up and running:
-
-* [Getting started](https://github.com/obsproject/obs-plugintemplate/wiki/Getting-Started)
-* [Build system requirements](https://github.com/obsproject/obs-plugintemplate/wiki/Build-System-Requirements)
-* [Build system options](https://github.com/obsproject/obs-plugintemplate/wiki/CMake-Build-System-Options)
-
-## GitHub Actions & CI
-
-Default GitHub Actions workflows are available for the following repository actions:
-
-* `push`: Run for commits or tags pushed to `master` or `main` branches.
-* `pr-pull`: Run when a Pull Request has been pushed or synchronized.
-* `dispatch`: Run when triggered by the workflow dispatch in GitHub's user interface.
-* `build-project`: Builds the actual project and is triggered by other workflows.
-* `check-format`: Checks CMake and plugin source code formatting and is triggered by other workflows.
-
-The workflows make use of GitHub repository actions (contained in `.github/actions`) and build scripts (contained in `.github/scripts`) which are not needed for local development, but might need to be adjusted if additional/different steps are required to build the plugin.
-
-### Retrieving build artifacts
-
-Successful builds on GitHub Actions will produce build artifacts that can be downloaded for testing. These artifacts are commonly simple archives and will not contain package installers or installation programs.
-
-### Building a Release
-
-To create a release, an appropriately named tag needs to be pushed to the `main`/`master` branch using semantic versioning (e.g., `12.3.4`, `23.4.5-beta2`). A draft release will be created on the associated repository with generated installer packages or installation programs attached as release artifacts.
-
-## Signing and Notarizing on macOS
-
-Basic concepts of codesigning and notarization on macOS are explained in the correspodning [Wiki article](https://github.com/obsproject/obs-plugintemplate/wiki/Codesigning-On-macOS) which has a specific section for the [GitHub Actions setup](https://github.com/obsproject/obs-plugintemplate/wiki/Codesigning-On-macOS#setting-up-code-signing-for-github-actions).
+If and when these features make it into xdg-desktop-portal, then this plugin will be archived and users will be able to transition to a portal-enabled solution, which would be bundled with OBS instead of being a separate plugin.
