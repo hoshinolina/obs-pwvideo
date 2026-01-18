@@ -36,6 +36,7 @@ if (( ! (${skips[(Ie)all]} + ${skips[(Ie)deps]}) )) {
   }
 
   sudo add-apt-repository --yes ppa:obsproject/obs-studio
+  sudo add-apt-repository --yes ppa:savoury1/pipewire
   sudo apt update
 
   sudo apt-get install ${apt_args} \
