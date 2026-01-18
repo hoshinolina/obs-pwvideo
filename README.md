@@ -21,3 +21,7 @@ Portals are a great concept. Unfortunately, xdg-desktop-portal doesn't really su
 * Support for a coarse-permissioned "user-managed" mode for power users who wish to manage video stream connections manually (e.g. with qpwgraph)
 
 If and when these features make it into xdg-desktop-portal, then this plugin will be archived and users will be able to transition to a portal-enabled solution, which would be bundled with OBS instead of being a separate plugin.
+
+## Dependencies
+
+This plugin requires PipeWire 1.2.7 or later. This is available on Ubuntu 25.04 or later.
