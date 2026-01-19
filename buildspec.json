@@ -4,7 +4,7 @@
             "version": "32.0.2",
             "baseUrl": "https://github.com/obsproject/obs-studio/archive/refs/tags",
             "label": "OBS sources",
-        },
+        }
     },
     "platformConfig": {
         "macos": {
@@ -13,7 +13,7 @@
     },
     "name": "obs-pwvideo",
     "displayName": "OBS PipeWire Video Source",
-    "version": "1.0.0",
+    "version": "0.1.0",
     "author": "Hoshino Lina",
     "website": "https://github.com/hoshinolina/obs-pwvideo",
     "email": "lina@lina.yt"
