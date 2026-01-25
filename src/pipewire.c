@@ -143,8 +143,6 @@ struct _obs_pipewire_stream {
 	obs_source_t *source;
 	char *name;
 
-	gs_texture_t *texture;
-
 	struct pw_stream *stream;
 	struct spa_hook stream_listener;
 	struct spa_source *reneg;
@@ -965,9 +963,6 @@ static void prepare_sync_buffer(obs_pipewire_stream *obs_pw_stream, struct prese
 			goto read_metadata;
 		}
 
-		if (obs_pw_stream->texture)
-			gs_texture_destroy(obs_pw_stream->texture);
-
 		pb->texture = gs_texture_create(obs_pw_stream->format.info.raw.size.width,
 						obs_pw_stream->format.info.raw.size.height,
 						obs_pw_video_format.gs_format, 1,
@@ -975,7 +970,7 @@ static void prepare_sync_buffer(obs_pipewire_stream *obs_pw_stream, struct prese
 	}
 
 	if (obs_pw_video_format.swap_red_blue)
-		swap_texture_red_blue(obs_pw_stream->texture);
+		swap_texture_red_blue(pb->texture);
 
 	/* Video Crop */
 	region = spa_buffer_find_meta_data(buffer, SPA_META_VideoCrop, sizeof(*region));
