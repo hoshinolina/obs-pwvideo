@@ -182,6 +182,19 @@ struct _obs_pipewire_stream {
 
 /* auxiliary methods */
 
+static gs_texture_t *pb_texture(struct present_buffer *pb)
+{
+	struct pw_buffer *b = pb->buf;
+
+	if (!b)
+		return NULL;
+
+	if (b->user_data)
+		return b->user_data;
+
+	return pb->texture;
+}
+
 static bool parse_pw_version(struct obs_pw_version *dst, const char *version)
 {
 	int n_matches = sscanf(version, "%d.%d.%d", &dst->major, &dst->minor, &dst->micro);
@@ -273,8 +286,8 @@ static struct present_buffer *get_buffer(obs_pipewire_stream *obs_pw_stream)
 	/* Cache some data for other threads to use */
 	pthread_mutex_lock(&obs_pw_stream->lock);
 	obs_pw_stream->crop = pb->crop;
-	obs_pw_stream->width = gs_texture_get_width(pb->texture);
-	obs_pw_stream->height = gs_texture_get_height(pb->texture);
+	obs_pw_stream->width = gs_texture_get_width(pb_texture(pb));
+	obs_pw_stream->height = gs_texture_get_height(pb_texture(pb));
 	obs_pw_stream->transform = pb->transform;
 	pthread_mutex_unlock(&obs_pw_stream->lock);
 
@@ -851,6 +864,60 @@ done:
 	pw_stream_queue_buffer(obs_pw_stream->stream, b);
 }
 
+static void import_dmabuf(obs_pipewire_stream *obs_pw_stream, struct pw_buffer *b)
+{
+	assert(!b->user_data);
+	struct spa_buffer *buffer = b->buffer;
+
+	struct obs_pw_video_format obs_pw_video_format;
+	bool has_buffer = true;
+
+	// Workaround for kwin behaviour pre 5.27.5
+	// Workaround for mutter behaviour pre GNOME 43
+	// Only check this if !SPA_META_Header, once supported platforms update.
+	has_buffer = buffer->datas[0].chunk->size != 0;
+	if (!has_buffer)
+		return;
+
+	if (buffer->datas[0].type == SPA_DATA_DmaBuf) {
+		uint32_t planes = get_spa_buffer_plane_count(buffer);
+		uint32_t *offsets = alloca(sizeof(uint32_t) * planes);
+		uint32_t *strides = alloca(sizeof(uint32_t) * planes);
+		uint64_t *modifiers = alloca(sizeof(uint64_t) * planes);
+		int *fds = alloca(sizeof(int) * planes);
+		bool use_modifiers;
+
+#ifdef DEBUG_PIPEWIRE
+		blog(LOG_DEBUG, "[pipewire] DMA-BUF info: fd:%ld, stride:%d, offset:%u, size:%dx%d",
+		     buffer->datas[0].fd, buffer->datas[0].chunk->stride, buffer->datas[0].chunk->offset,
+		     obs_pw_stream->format.info.raw.size.width, obs_pw_stream->format.info.raw.size.height);
+#endif
+
+		if (!obs_pw_video_format_from_spa_format(obs_pw_stream->format.info.raw.format, &obs_pw_video_format) ||
+		    obs_pw_video_format.gs_format == GS_UNKNOWN) {
+			blog(LOG_ERROR, "[pipewire] unsupported DMA buffer format: %d",
+			     obs_pw_stream->format.info.raw.format);
+			return;
+		}
+
+		for (uint32_t plane = 0; plane < planes; plane++) {
+			fds[plane] = buffer->datas[plane].fd;
+			offsets[plane] = buffer->datas[plane].chunk->offset;
+			strides[plane] = buffer->datas[plane].chunk->stride;
+			modifiers[plane] = obs_pw_stream->format.info.raw.modifier;
+		}
+
+		use_modifiers = obs_pw_stream->format.info.raw.modifier != DRM_FORMAT_MOD_INVALID;
+		blog(LOG_INFO, "[pipewire] Importing dmabuf early");
+		gs_texture_t *texture = gs_texture_create_from_dmabuf(
+			obs_pw_stream->format.info.raw.size.width, obs_pw_stream->format.info.raw.size.height,
+			obs_pw_video_format.drm_format, obs_pw_video_format.gs_format, planes, fds, strides, offsets,
+			use_modifiers ? modifiers : NULL);
+
+		b->user_data = texture;
+	}
+}
+
 static void prepare_sync_buffer(obs_pipewire_stream *obs_pw_stream, struct present_buffer *pb)
 {
 	obs_pipewire *obs_pw = obs_pw_stream->obs_pw;
@@ -874,11 +941,6 @@ static void prepare_sync_buffer(obs_pipewire_stream *obs_pw_stream, struct prese
 
 	if (buffer->datas[0].type == SPA_DATA_DmaBuf) {
 		uint32_t planes = get_spa_buffer_plane_count(buffer);
-		uint32_t *offsets = alloca(sizeof(uint32_t) * planes);
-		uint32_t *strides = alloca(sizeof(uint32_t) * planes);
-		uint64_t *modifiers = alloca(sizeof(uint64_t) * planes);
-		int *fds = alloca(sizeof(int) * planes);
-		bool use_modifiers;
 		bool corrupt = false;
 #if PW_CHECK_VERSION(1, 2, 0)
 		struct spa_meta_sync_timeline *synctimeline =
@@ -899,10 +961,6 @@ static void prepare_sync_buffer(obs_pipewire_stream *obs_pw_stream, struct prese
 		}
 
 		for (uint32_t plane = 0; plane < planes; plane++) {
-			fds[plane] = buffer->datas[plane].fd;
-			offsets[plane] = buffer->datas[plane].chunk->offset;
-			strides[plane] = buffer->datas[plane].chunk->stride;
-			modifiers[plane] = obs_pw_stream->format.info.raw.modifier;
 			corrupt |= (buffer->datas[plane].chunk->flags & SPA_CHUNK_FLAG_CORRUPTED) > 0;
 		}
 
@@ -930,14 +988,7 @@ static void prepare_sync_buffer(obs_pipewire_stream *obs_pw_stream, struct prese
 			goto read_metadata;
 		}
 
-		use_modifiers = obs_pw_stream->format.info.raw.modifier != DRM_FORMAT_MOD_INVALID;
-		pb->texture = gs_texture_create_from_dmabuf(obs_pw_stream->format.info.raw.size.width,
-							    obs_pw_stream->format.info.raw.size.height,
-							    obs_pw_video_format.drm_format,
-							    obs_pw_video_format.gs_format, planes, fds, strides,
-							    offsets, use_modifiers ? modifiers : NULL);
-
-		if (pb->texture == NULL) {
+		if (pb_texture(pb) == NULL) {
 			remove_modifier_from_format(obs_pw_stream, obs_pw_stream->format.info.raw.format,
 						    obs_pw_stream->format.info.raw.modifier);
 			pw_loop_signal_event(pw_thread_loop_get_loop(obs_pw->thread_loop), obs_pw_stream->reneg);
@@ -970,7 +1021,7 @@ static void prepare_sync_buffer(obs_pipewire_stream *obs_pw_stream, struct prese
 	}
 
 	if (obs_pw_video_format.swap_red_blue)
-		swap_texture_red_blue(pb->texture);
+		swap_texture_red_blue(pb_texture(pb));
 
 	/* Video Crop */
 	region = spa_buffer_find_meta_data(buffer, SPA_META_VideoCrop, sizeof(*region));
@@ -1300,8 +1351,15 @@ static void on_add_buffer(void *user_data, struct pw_buffer *pwbuffer)
 {
 	obs_pipewire_stream *obs_pw_stream = user_data;
 
+	pwbuffer->user_data = NULL;
+
 	blog(LOG_INFO, "[pipewire] Stream %p add_buffer: %p", obs_pw_stream->stream, pwbuffer);
+
+	obs_enter_graphics();
+	import_dmabuf(obs_pw_stream, pwbuffer);
+	obs_leave_graphics();
 }
+
 static void on_remove_buffer(void *user_data, struct pw_buffer *pwbuffer)
 {
 	obs_pipewire_stream *obs_pw_stream = user_data;
@@ -1316,6 +1374,12 @@ static void on_remove_buffer(void *user_data, struct pw_buffer *pwbuffer)
 		obs_pw_stream->buffers[1].buf = NULL;
 	if (obs_pw_stream->presenting_buffer.buf == pwbuffer)
 		obs_pw_stream->presenting_buffer.buf = NULL;
+
+	if (pwbuffer->user_data)
+		gs_texture_destroy(pwbuffer->user_data);
+
+	pwbuffer->user_data = NULL;
+
 	obs_leave_graphics();
 }
 
@@ -1632,7 +1696,9 @@ void obs_pipewire_stream_video_render(obs_pipewire_stream *obs_pw_stream, gs_eff
 
 	assert(pb->state != BUFFER_FREE);
 
-	if (!pb->texture || !pb->buf)
+	gs_texture_t *texture = pb_texture(pb);
+
+	if (!texture || !pb->buf)
 		return;
 
 	if (pb->sync.set) {
@@ -1643,7 +1709,7 @@ void obs_pipewire_stream_video_render(obs_pipewire_stream *obs_pw_stream, gs_eff
 	}
 
 	image = gs_effect_get_param_by_name(effect, "image");
-	gs_effect_set_texture(image, pb->texture);
+	gs_effect_set_texture(image, texture);
 
 	rotated = push_rotation(obs_pw_stream);
 
@@ -1661,9 +1727,9 @@ void obs_pipewire_stream_video_render(obs_pipewire_stream *obs_pw_stream, gs_eff
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 
 	if (has_effective_crop(obs_pw_stream)) {
-		gs_draw_sprite_subregion(pb->texture, flip, pb->crop.x, pb->crop.y, pb->crop.width, pb->crop.height);
+		gs_draw_sprite_subregion(texture, flip, pb->crop.x, pb->crop.y, pb->crop.width, pb->crop.height);
 	} else {
-		gs_draw_sprite(pb->texture, flip, 0, 0);
+		gs_draw_sprite(texture, flip, 0, 0);
 	}
 
 	if (rotated)
