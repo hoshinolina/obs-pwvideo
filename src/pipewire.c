@@ -1677,7 +1677,7 @@ void obs_pipewire_stream_video_render(obs_pipewire_stream *obs_pw_stream, gs_eff
 		gs_matrix_translate3f(cursor_x, cursor_y, 0.0f);
 
 		gs_effect_set_texture(image, pb->cursor.texture);
-		gs_draw_sprite(pb->texture, 0, pb->cursor.width, pb->cursor.height);
+		gs_draw_sprite(pb->cursor.texture, 0, pb->cursor.width, pb->cursor.height);
 
 		gs_matrix_pop();
 	}
