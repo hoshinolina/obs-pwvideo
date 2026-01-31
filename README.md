@@ -25,3 +25,28 @@ If and when these features make it into xdg-desktop-portal, then this plugin wil
 ## Dependencies
 
 This plugin requires PipeWire 1.2.7 or later. This is available on Ubuntu 25.04 or later.
+
+## Credits
+
+The PipeWire code is based on the upstream OBS source code, which at the time of forking had the following contributors:
+
+* Georges Basile Stavracas Neto
+* tytan652
+* columbarius
+* Kurt Kartaltepe
+* Wim Taymans
+* PatTheMav
+* Ivan Molodetskikh
+* WizardCM
+* PancakeTAS
+* Norihiro Kamae
+* Vainock
+* Ryan Foster
+* Robert Mader
+* Lain
+* Joshua Ashton
+* Jan Beich
+* Doğukan Korkmaztürk
+* dimtpap
+* Hoshino Lina
+* Aleix Pol
