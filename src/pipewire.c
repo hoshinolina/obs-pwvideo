@@ -979,6 +979,9 @@ static void prepare_sync_buffer(obs_pipewire_stream *obs_pw_stream, struct prese
 			pb->sync.release_syncobj_fd = buffer->datas[planes + 1].fd;
 			pb->sync.release_point = synctimeline->release_point;
 
+			blog(LOG_DEBUG, "[pipewire] Sync: Acquire %d/%ld Release %d/%ld", pb->sync.acquire_syncobj_fd,
+			     (long)pb->sync.acquire_point, pb->sync.release_syncobj_fd, (long)pb->sync.release_point);
+
 			pb->sync.set = true;
 		} else {
 			pb->sync.set = false;
@@ -1710,6 +1713,8 @@ void obs_pipewire_stream_video_render(obs_pipewire_stream *obs_pw_stream, gs_eff
 		return;
 
 	if (pb->sync.set) {
+		blog(LOG_DEBUG, "[pipewire] Acquiring sync %d/%ld", pb->sync.acquire_syncobj_fd,
+		     (long)pb->sync.acquire_point);
 		gs_sync_t *acquire_sync =
 			gs_sync_create_from_syncobj_timeline_point(pb->sync.acquire_syncobj_fd, pb->sync.acquire_point);
 		gs_sync_wait(acquire_sync);
