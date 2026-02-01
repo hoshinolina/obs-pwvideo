@@ -29,6 +29,7 @@
 #include <util/dstr.h>
 
 #include <fcntl.h>
+#include <unistd.h>
 //#include <glad/glad.h>
 #include <libdrm/drm_fourcc.h>
 #include <pipewire/pipewire.h>
@@ -980,7 +981,7 @@ static void prepare_sync_buffer(obs_pipewire_stream *obs_pw_stream, struct prese
 			pb->sync.set = false;
 		}
 #else
-		obs_pw_stream->sync.set = false;
+		pb->sync.set = false;
 #endif
 
 		if (corrupt) {

@@ -18,7 +18,7 @@ add_library(${CMAKE_PROJECT_NAME} MODULE)
 find_package(libobs REQUIRED)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs)
 
-find_package(PipeWire 0.3.33 REQUIRED)
+find_package(PipeWire 0.3.83 REQUIRED)
 find_package(Libdrm REQUIRED)
 get_target_property(libdrm_include_directories Libdrm::Libdrm INTERFACE_INCLUDE_DIRECTORIES)
 
