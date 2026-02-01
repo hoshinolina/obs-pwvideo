@@ -1,5 +1,10 @@
 # OBS PipeWire Video Source
 
+[![Github-sponsors](https://img.shields.io/github/sponsors/hoshinolina?label=Sponsor&logo=GitHub)](https://lina.yt/sponsor)
+[![Ko-Fi](https://shields.io/badge/ko--fi-Tip-ff5f5f?logo=ko-fi)](https://lina.yt/kofi)
+
+**If you like this, please help support me with the links above!**
+
 This source is a fork of the OBS PipeWire video code (used for screen/window capture on Wayland and PipeWire webcam capture), modified to work as a generic video source. It is the video counterpart to the JACK audio source, and serves a similar purpose as the Spout2 and Syphon sources on Windows and macOS, respectively.
 
 It is designed to work with apps that can send video using PipeWire, such as those using [libfunnel](https://github.com/hoshinolina/libfunnel/).
