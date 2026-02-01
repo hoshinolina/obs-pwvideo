@@ -42,12 +42,7 @@ endif()
 
 target_sources(
   ${CMAKE_PROJECT_NAME}
-  PRIVATE
-    src/plugin-main.c
-    src/pipewire.c
-    src/pipewire.h
-    src/formats.c
-    src/formats.h
+  PRIVATE src/plugin-main.c src/pipewire.c src/pipewire.h src/formats.c src/formats.h
 )
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${libdrm_include_directories})
 
