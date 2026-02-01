@@ -287,8 +287,11 @@ static struct present_buffer *get_buffer(obs_pipewire_stream *obs_pw_stream)
 	/* Cache some data for other threads to use */
 	pthread_mutex_lock(&obs_pw_stream->lock);
 	obs_pw_stream->crop = pb->crop;
-	obs_pw_stream->width = gs_texture_get_width(pb_texture(pb));
-	obs_pw_stream->height = gs_texture_get_height(pb_texture(pb));
+	gs_texture_t *tex = pb_texture(pb);
+	if (tex) {
+		obs_pw_stream->width = gs_texture_get_width(tex);
+		obs_pw_stream->height = gs_texture_get_height(tex);
+	}
 	obs_pw_stream->transform = pb->transform;
 	pthread_mutex_unlock(&obs_pw_stream->lock);
 
