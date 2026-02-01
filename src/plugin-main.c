@@ -23,6 +23,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <util/dstr.h>
 #include "pipewire.h"
 
+#if !PW_CHECK_VERSION(1, 2, 7)
+#define PW_KEY_NODE_SUPPORTS_REQUEST        "node.supports-request"
+#endif
+
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 MODULE_EXPORT const char *obs_module_description(void)

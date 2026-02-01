@@ -24,7 +24,9 @@ If and when these features make it into xdg-desktop-portal, then this plugin wil
 
 ## Dependencies
 
-This plugin requires PipeWire 1.2.7 or later. This is available on Ubuntu 25.04 or later.
+This plugin has been tested with PipeWire 1.2.4 or later. It may or may not build/work with older versions.
+
+Preliminary explicit sync support requires PipeWire 1.2.0. Full explicit sync support will require 1.6.0 (not released yet nor implemented).
 
 ## Credits
 

@@ -1167,8 +1167,12 @@ static void process_video_sync(obs_pipewire_stream *obs_pw_stream)
 	}
 
 	/* Skip double buffering if OBS is the timing source, since it makes no sense */
-	bool no_double_buffering = pw_stream_is_driving(obs_pw_stream->stream) ||
-				   pw_stream_is_lazy(obs_pw_stream->stream);
+	bool no_double_buffering = pw_stream_is_driving(obs_pw_stream->stream);
+
+#if PW_CHECK_VERSION(1, 2, 7)
+	if (pw_stream_is_lazy(obs_pw_stream->stream))
+		no_double_buffering = true;
+#endif
 
 	obs_enter_graphics();
 
