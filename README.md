@@ -33,6 +33,23 @@ This plugin has been tested with PipeWire 1.2.4 or later. The minimum build requ
 
 Preliminary explicit sync support requires PipeWire 1.2.0. Full explicit sync support will require 1.6.0 (not released yet nor implemented).
 
+## How to Build from Source
+
+After cloning, open a shell, change directories to project root, and execute:
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build -j
+```
+This will configure + build. Afterwards:
+```bash
+mkdir -p ~/.config/obs-studio/plugins/obs-pwvideo/bin/64bit
+mkdir -p ~/.config/obs-studio/obs-pwvideo/data
+# Copy Plugin .so
+cp build/obs-pwvideo.so ~/.config/obs-studio/plugins/obs-pwvideo/bin/64bit/
+# Copy data
+cp data/* ~/.config/obs-studio/plugins/obs-pwvideo/data/
+```
+
 ## Credits
 
 The PipeWire code is based on the upstream OBS source code, which at the time of forking had the following contributors:
