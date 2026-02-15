@@ -258,6 +258,8 @@ static void pipewire_video_capture_update(void *data, obs_data_t *settings)
 
 	if (capture->obs_pw_stream)
 		obs_pipewire_stream_set_double_buffering(capture->obs_pw_stream, capture->double_buffering);
+
+	obs_pipewire_connect_to_output(capture->obs_pw_stream, obs_data_get_int(settings, "CaptureSource"));
 }
 
 static void pipewire_video_capture_show(void *data)

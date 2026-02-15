@@ -179,6 +179,8 @@ struct _obs_pipewire_stream {
 	struct crop_info crop;
 	enum spa_meta_videotransform_value transform;
 	uint32_t width, height;
+
+	uint32_t link_id;
 };
 
 /* auxiliary methods */
@@ -1882,4 +1884,72 @@ void obs_pipewire_stream_set_name(obs_pipewire_stream *obs_pw_stream, const char
 
 	/* Signal to rename */
 	pw_loop_signal_event(pw_thread_loop_get_loop(obs_pw->thread_loop), obs_pw_stream->rename);
+}
+
+void on_link_proxy_bound_cb(void *data, uint32_t global_id)
+{
+	obs_pipewire_stream *obs_pw_stream = (obs_pipewire_stream *)data;
+	obs_pw_stream->link_id = global_id;
+	blog(LOG_INFO, "[pipewire] Created link %u", obs_pw_stream->link_id);
+}
+
+void on_link_proxy_error_cb(void *data, int seq, int res, const char *message)
+{
+	UNUSED_PARAMETER(seq);
+	UNUSED_PARAMETER(res);
+
+	blog(LOG_INFO, "[pipewire] Link proxy error '%s'", message);
+
+	obs_pipewire_stream *obs_pw_stream = (obs_pipewire_stream *)data;
+
+	if (obs_pw_stream->link_id != 0) {
+		pw_registry_destroy(obs_pw_stream->obs_pw->registry, obs_pw_stream->link_id);
+		obs_pw_stream->link_id = 0;
+	}
+}
+
+static const struct pw_proxy_events link_proxy_events = {
+	.version = PW_VERSION_LINK_EVENTS,
+	.bound = on_link_proxy_bound_cb,
+	.error = on_link_proxy_error_cb,
+};
+
+void obs_pipewire_connect_to_output(obs_pipewire_stream *obs_pw_stream, uint32_t port_id)
+{
+	obs_pipewire *obs_pw = obs_pw_stream->obs_pw;
+	pw_thread_loop_lock(obs_pw->thread_loop);
+
+	blog(LOG_INFO, "[pipewire] Connecting stream to port %u", port_id);
+
+	if (obs_pw_stream->link_id != 0) {
+		pw_registry_destroy(obs_pw->registry, obs_pw_stream->link_id);
+		obs_pw_stream->link_id = 0;
+		obs_pw->sync_id = pw_core_sync(obs_pw->core, PW_ID_CORE, obs_pw->sync_id);
+		pw_thread_loop_wait(obs_pw->thread_loop);
+	}
+
+	char out_port[16], node_id[16];
+	snprintf(out_port, sizeof(out_port), "%u", port_id);
+	snprintf(node_id, sizeof(node_id), "%u", pw_stream_get_node_id(obs_pw_stream->stream));
+
+	struct spa_dict props;
+	struct spa_dict_item items[3];
+	props = SPA_DICT_INIT(items, 0);
+	items[props.n_items++] = SPA_DICT_ITEM_INIT(PW_KEY_LINK_OUTPUT_PORT, out_port);
+	items[props.n_items++] = SPA_DICT_ITEM_INIT(PW_KEY_LINK_INPUT_NODE,  node_id);
+	items[props.n_items++] = SPA_DICT_ITEM_INIT(PW_KEY_OBJECT_LINGER,    "true");
+
+	struct pw_proxy *link_proxy = (struct pw_proxy *)pw_core_create_object(obs_pw->core,
+		"link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, &props, 0);
+	if (link_proxy) {
+		struct spa_hook link_proxy_listener;
+		spa_zero(link_proxy_listener);
+		pw_proxy_add_listener(link_proxy, &link_proxy_listener, &link_proxy_events, obs_pw_stream);
+		obs_pw->sync_id = pw_core_sync(obs_pw->core, PW_ID_CORE, obs_pw->sync_id);
+		pw_thread_loop_wait(obs_pw->thread_loop);
+		spa_hook_remove(&link_proxy_listener);
+		pw_proxy_destroy(link_proxy);
+	}
+
+	pw_thread_loop_unlock(obs_pw->thread_loop);
 }

@@ -66,3 +66,4 @@ void obs_pipewire_stream_set_resolution(obs_pipewire_stream *obs_pw, const struc
 
 void obs_pipewire_stream_set_name(obs_pipewire_stream *obs_pw_stream, const char *name);
 
+void obs_pipewire_connect_to_output(obs_pipewire_stream *obs_pw_stream, uint32_t port_id);
