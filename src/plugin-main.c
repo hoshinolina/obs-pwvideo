@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 #include <util/dstr.h>
 #include "pipewire.h"
+#include <spa/utils/dict.h>
 
 #if !PW_CHECK_VERSION(1, 2, 7)
 #define PW_KEY_NODE_SUPPORTS_REQUEST        "node.supports-request"
@@ -34,12 +35,19 @@ MODULE_EXPORT const char *obs_module_description(void)
 	return "Generic PipeWire video source";
 }
 
+struct _pipewire_source {
+	uint32_t id;
+	struct dstr name;
+};
+
 struct pipewire_video_capture {
 	obs_source_t *source;
 	obs_data_t *settings;
 
 	uint32_t pipewire_node;
 	bool double_buffering;
+	DARRAY(uint32_t) video_nodes;
+	DARRAY(struct _pipewire_source) available_sources;
 
 	obs_pipewire *obs_pw;
 	obs_pipewire_stream *obs_pw_stream;
@@ -62,6 +70,76 @@ void pipewire_video_rename(void *param, calldata_t *data)
 	obs_pipewire_stream_set_name(capture->obs_pw_stream, calldata_string(data, "new_name"));
 }
 
+static void obs_pipewire_registry_event_global(void *data, uint32_t id, uint32_t permissions,
+					       const char *type, uint32_t version,
+					       const struct spa_dict *props)
+{
+	UNUSED_PARAMETER(permissions);
+	UNUSED_PARAMETER(version);
+
+	struct pipewire_video_capture *capture = data;
+
+	if (!capture || !props) {
+		return;
+	}
+
+	if (strcmp(type, PW_TYPE_INTERFACE_Node) == 0) {
+		const char *media_class = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
+		if (!media_class) {
+			return;
+		}
+		if (strcmp(media_class, "Stream/Output/Video") != 0) {
+			return;
+		}
+		da_push_back(capture->video_nodes, &id);
+	} else if (strcmp(type, PW_TYPE_INTERFACE_Port) == 0) {
+		const char *direction = spa_dict_lookup(props, PW_KEY_PORT_DIRECTION);
+		if (strcmp(direction, "out") != 0) {
+			return;
+		}
+
+		const char *node_id_str = spa_dict_lookup(props, PW_KEY_NODE_ID);
+		if (!node_id_str) {
+			return;
+		}
+		uint32_t node_id = strtoul(node_id_str, NULL, 10);
+		if (da_find(capture->video_nodes, &node_id, 0) == DARRAY_INVALID) {
+			return;
+		}
+
+		struct _pipewire_source source = {
+			.id = id,
+		};
+		dstr_init_copy(&source.name, spa_dict_lookup(props, PW_KEY_PORT_ALIAS));
+		da_push_back(capture->available_sources, &source);
+	}
+}
+
+static void obs_pipewire_registry_event_global_remove(void *data, uint32_t id)
+{
+	struct pipewire_video_capture *capture = data;
+	if (!capture) {
+		return;
+	}
+
+	da_erase_item(capture->video_nodes, &id);
+
+	for (size_t i = 0; i < capture->available_sources.num; ++i) {
+		struct _pipewire_source source = capture->available_sources.array[i];
+		if (source.id == id) {
+			dstr_free(&source.name);
+			da_erase(capture->available_sources, i);
+			break;
+		}
+	}
+}
+
+static const struct pw_registry_events registry_events = {
+        .version = PW_VERSION_REGISTRY_EVENTS,
+        .global = obs_pipewire_registry_event_global,
+	.global_remove = obs_pipewire_registry_event_global_remove,
+};
+
 static void *pipewire_video_capture_create(obs_data_t *settings, obs_source_t *source)
 {
 	UNUSED_PARAMETER(settings);
@@ -71,8 +149,10 @@ static void *pipewire_video_capture_create(obs_data_t *settings, obs_source_t *s
 	capture = bzalloc(sizeof(struct pipewire_video_capture));
 	capture->source = source;
 	capture->double_buffering = obs_data_get_bool(settings, "DoubleBuffering");
+	da_init(capture->video_nodes);
+	da_init(capture->available_sources);
 
-	capture->obs_pw = obs_pipewire_connect(NULL, NULL);
+	capture->obs_pw = obs_pipewire_connect(&registry_events, capture);
 	if (!capture->obs_pw) {
 		bfree(capture);
 		return NULL;
@@ -123,6 +203,13 @@ static void pipewire_video_capture_destroy(void *data)
 	signal_handler_t *sh = obs_source_get_signal_handler(capture->source);
 	signal_handler_disconnect(sh, "rename", pipewire_video_rename, capture);
 
+	da_free(capture->video_nodes);
+	for (size_t i = 0; i < capture->available_sources.num; ++i) {
+		struct _pipewire_source source = capture->available_sources.array[i];
+		dstr_free(&source.name);
+	}
+	da_free(capture->available_sources);
+
 	if (capture->obs_pw_stream) {
 		obs_pipewire_stream_destroy(capture->obs_pw_stream);
 		capture->obs_pw_stream = NULL;
@@ -139,10 +226,23 @@ static void pipewire_video_capture_get_defaults(obs_data_t *settings)
 
 static obs_properties_t *pipewire_video_capture_get_properties(void *data)
 {
-	UNUSED_PARAMETER(data);
 	obs_properties_t *properties;
 
 	properties = obs_properties_create();
+
+	obs_property_t *sources_list = obs_properties_add_list(properties, "CaptureSource", obs_module_text("Capture Source"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+
+	struct pipewire_video_capture *capture = data;
+	if (capture) {
+		for (size_t i = 0; i < capture->available_sources.num; ++i) {
+			struct _pipewire_source source = capture->available_sources.array[i];
+			struct dstr name;
+			dstr_init(&name);
+			dstr_printf(&name, "%s (id: %u)", source.name.array, source.id);
+			obs_property_list_add_int(sources_list, name.array, source.id);
+			dstr_free(&name);
+		}
+	}
 
 	obs_properties_add_bool(properties, "DoubleBuffering", obs_module_text("DoubleBuffering"));
 
