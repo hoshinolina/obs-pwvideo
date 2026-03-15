@@ -29,6 +29,7 @@ typedef struct _obs_pipewire_stream obs_pipewire_stream;
 
 struct obs_pipwire_connect_stream_info {
 	const char *stream_name;
+	const char *stream_target;
 	struct pw_properties *stream_properties;
 	bool double_buffering;
 	struct {
@@ -62,7 +63,7 @@ void obs_pipewire_stream_set_double_buffering(obs_pipewire_stream *obs_pw_stream
 void obs_pipewire_stream_destroy(obs_pipewire_stream *obs_pw_stream);
 
 void obs_pipewire_stream_set_framerate(obs_pipewire_stream *obs_pw_stream, const struct spa_fraction *framerate);
-void obs_pipewire_stream_set_resolution(obs_pipewire_stream *obs_pw, const struct spa_rectangle *resolution);
+void obs_pipewire_stream_set_resolution(obs_pipewire_stream *obs_pw_stream, const struct spa_rectangle *resolution);
 
 void obs_pipewire_stream_set_name(obs_pipewire_stream *obs_pw_stream, const char *name);
-
+void obs_pipewire_stream_set_target(obs_pipewire_stream *obs_pw_stream, const char *target);

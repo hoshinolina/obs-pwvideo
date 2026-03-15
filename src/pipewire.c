@@ -33,6 +33,7 @@
 //#include <glad/glad.h>
 #include <libdrm/drm_fourcc.h>
 #include <pipewire/pipewire.h>
+#include <pipewire/extensions/metadata.h>
 #include <spa/param/video/format-utils.h>
 #include <spa/buffer/meta.h>
 #include <spa/debug/format.h>
@@ -94,7 +95,10 @@ struct _obs_pipewire {
 	struct obs_pw_version server_version;
 
 	struct pw_registry *registry;
+	struct spa_hook user_registry_listener;
 	struct spa_hook registry_listener;
+
+	struct pw_metadata *metadata;
 
 	struct spa_list streams;
 };
@@ -142,12 +146,15 @@ struct _obs_pipewire_stream {
 	obs_pipewire *obs_pw;
 	struct spa_list link;
 	obs_source_t *source;
+	pthread_mutex_t cfg_lock;
 	char *name;
+	char *target;
 
 	struct pw_stream *stream;
 	struct spa_hook stream_listener;
 	struct spa_source *reneg;
 	struct spa_source *rename;
+	struct spa_source *set_target;
 
 	struct spa_video_info format;
 
@@ -226,6 +233,11 @@ static void teardown_pipewire(obs_pipewire *obs_pw)
 	if (obs_pw->thread_loop) {
 		obs_pipewire_roundtrip(obs_pw);
 		pw_thread_loop_stop(obs_pw->thread_loop);
+	}
+
+	if (obs_pw->metadata) {
+		pw_proxy_destroy((struct pw_proxy *)obs_pw->metadata);
+		obs_pw->metadata = NULL;
 	}
 
 	if (obs_pw->registry) {
@@ -710,14 +722,42 @@ static void rename_node(void *data, uint64_t expirations)
 		return;
 	}
 
-	pthread_mutex_lock(&obs_pw_stream->lock);
+	pthread_mutex_lock(&obs_pw_stream->cfg_lock);
 	set_name_properties(props, obs_pw_stream->name);
-	pthread_mutex_unlock(&obs_pw_stream->lock);
+	pthread_mutex_unlock(&obs_pw_stream->cfg_lock);
 
 	pw_thread_loop_lock(obs_pw->thread_loop);
 	pw_stream_update_properties(obs_pw_stream->stream, &props->dict);
 	pw_thread_loop_unlock(obs_pw->thread_loop);
+
 	pw_properties_free(props);
+}
+
+static void set_target(void *data, uint64_t expirations)
+{
+	UNUSED_PARAMETER(expirations);
+	obs_pipewire_stream *obs_pw_stream = (obs_pipewire_stream *)data;
+	obs_pipewire *obs_pw = obs_pw_stream->obs_pw;
+
+	pw_thread_loop_lock(obs_pw->thread_loop);
+	uint32_t node_id = pw_stream_get_node_id(obs_pw_stream->stream);
+
+	if (node_id == SPA_ID_INVALID) {
+		pw_thread_loop_unlock(obs_pw->thread_loop);
+		return;
+	}
+
+	pthread_mutex_lock(&obs_pw_stream->cfg_lock);
+	char *tgt = obs_pw_stream->target;
+	obs_pw_stream->target = NULL;
+	pthread_mutex_unlock(&obs_pw_stream->cfg_lock);
+
+	if (tgt)
+		pw_metadata_set_property(obs_pw->metadata, node_id, PW_KEY_TARGET_OBJECT, SPA_TYPE_INFO_BASE "Id", tgt);
+
+	pw_thread_loop_unlock(obs_pw->thread_loop);
+
+	bfree(tgt);
 }
 
 /* ------------------------------------------------- */
@@ -1356,6 +1396,15 @@ static void on_state_changed_cb(void *user_data, enum pw_stream_state old, enum 
 
 	blog(LOG_INFO, "[pipewire] Stream %p state: \"%s\" (error: %s)", obs_pw_stream->stream,
 	     pw_stream_state_as_string(state), error ? error : "none");
+
+	// Make sure we update the target if the stream was just created
+	pthread_mutex_lock(&obs_pw_stream->cfg_lock);
+	bool do_target = !!obs_pw_stream->target;
+	pthread_mutex_unlock(&obs_pw_stream->cfg_lock);
+
+	if (do_target)
+		pw_loop_signal_event(pw_thread_loop_get_loop(obs_pw_stream->obs_pw->thread_loop),
+				     obs_pw_stream->set_target);
 }
 
 static void on_add_buffer(void *user_data, struct pw_buffer *pwbuffer)
@@ -1434,6 +1483,35 @@ static const struct pw_core_events core_events = {
 	.error = on_core_error_cb,
 };
 
+static void on_registry_global_cb(void *user_data, uint32_t id, uint32_t permissions, const char *type,
+				  uint32_t version, const struct spa_dict *props)
+{
+	UNUSED_PARAMETER(permissions);
+	UNUSED_PARAMETER(version);
+
+	obs_pipewire *obs_pw = user_data;
+
+	if (!spa_streq(type, PW_TYPE_INTERFACE_Metadata))
+		return;
+
+	if (props == NULL)
+		return;
+
+	const char *name = spa_dict_lookup(props, PW_KEY_METADATA_NAME);
+	if (name == NULL)
+		return;
+
+	if (!spa_streq(name, "default"))
+		return;
+
+	obs_pw->metadata = pw_registry_bind(obs_pw->registry, id, type, PW_VERSION_METADATA, 0);
+}
+
+static const struct pw_registry_events pw_registry_events = {
+	PW_VERSION_REGISTRY_EVENTS,
+	.global = on_registry_global_cb,
+};
+
 /* obs_source_info methods */
 
 obs_pipewire *obs_pipewire_connect(const struct pw_registry_events *registry_events, void *user_data)
@@ -1480,11 +1558,11 @@ obs_pipewire *obs_pipewire_connect_fd(int pipewire_fd, const struct pw_registry_
 	pw_thread_loop_wait(obs_pw->thread_loop);
 
 	/* Registry */
-	if (registry_events) {
-		obs_pw->registry = pw_core_get_registry(obs_pw->core, PW_VERSION_REGISTRY, 0);
-		pw_registry_add_listener(obs_pw->registry, &obs_pw->registry_listener, registry_events, user_data);
-		blog(LOG_INFO, "[pipewire] Created registry %p", obs_pw->registry);
-	}
+	obs_pw->registry = pw_core_get_registry(obs_pw->core, PW_VERSION_REGISTRY, 0);
+	blog(LOG_INFO, "[pipewire] Created registry %p", obs_pw->registry);
+	pw_registry_add_listener(obs_pw->registry, &obs_pw->registry_listener, &pw_registry_events, obs_pw);
+	if (registry_events)
+		pw_registry_add_listener(obs_pw->registry, &obs_pw->user_registry_listener, registry_events, user_data);
 
 	pw_thread_loop_unlock(obs_pw->thread_loop);
 
@@ -1536,7 +1614,8 @@ obs_pipewire_stream *obs_pipewire_connect_stream(obs_pipewire *obs_pw, obs_sourc
 	assert(connect_info != NULL);
 
 	obs_pw_stream = bzalloc(sizeof(obs_pipewire_stream));
-	obs_pw_stream->name = strdup(connect_info->stream_name);
+	obs_pw_stream->name = bstrdup(connect_info->stream_name);
+	obs_pw_stream->target = bstrdup(connect_info->stream_target ? connect_info->stream_target : "<none>");
 	obs_pw_stream->obs_pw = obs_pw;
 	obs_pw_stream->source = source;
 	obs_pw_stream->cursor_visible = connect_info->screencast.cursor_visible;
@@ -1544,8 +1623,17 @@ obs_pipewire_stream *obs_pipewire_connect_stream(obs_pipewire *obs_pw, obs_sourc
 	obs_pw_stream->framerate.set = connect_info->video.framerate != NULL;
 	obs_pw_stream->resolution.set = connect_info->video.resolution != NULL;
 	pthread_mutex_init(&obs_pw_stream->lock, NULL);
+	pthread_mutex_init(&obs_pw_stream->cfg_lock, NULL);
 
 	set_name_properties(connect_info->stream_properties, obs_pw_stream->name);
+
+	if (pipewire_node == SPA_ID_INVALID) {
+		pw_properties_set(connect_info->stream_properties, PW_KEY_TARGET_OBJECT, "<none>");
+		// Do not try a random video device if source not found
+		pw_properties_set(connect_info->stream_properties, "node.dont-fallback", "true");
+		// Do not destroy the node if source not found
+		pw_properties_set(connect_info->stream_properties, "node.linger", "true");
+	}
 
 	if (obs_pw_stream->framerate.set)
 		obs_pw_stream->framerate.fraction = *connect_info->video.framerate;
@@ -1567,6 +1655,11 @@ obs_pipewire_stream *obs_pipewire_connect_stream(obs_pipewire *obs_pw, obs_sourc
 		pw_loop_add_event(pw_thread_loop_get_loop(obs_pw->thread_loop), rename_node, obs_pw_stream);
 	blog(LOG_DEBUG, "[pipewire] registered event %p", obs_pw_stream->rename);
 
+	/* Signal to set target */
+	obs_pw_stream->set_target =
+		pw_loop_add_event(pw_thread_loop_get_loop(obs_pw->thread_loop), set_target, obs_pw_stream);
+	blog(LOG_DEBUG, "[pipewire] registered event %p", obs_pw_stream->set_target);
+
 	/* Stream */
 	obs_pw_stream->stream = pw_stream_new(obs_pw->core, connect_info->stream_name, connect_info->stream_properties);
 	pw_stream_add_listener(obs_pw_stream->stream, &obs_pw_stream->stream_listener, &stream_events, obs_pw_stream);
@@ -1584,8 +1677,7 @@ obs_pipewire_stream *obs_pipewire_connect_stream(obs_pipewire *obs_pw, obs_sourc
 	}
 
 	enum pw_stream_flags flags = PW_STREAM_FLAG_MAP_BUFFERS;
-	if (pipewire_node != SPA_ID_INVALID)
-		flags |= PW_STREAM_FLAG_AUTOCONNECT;
+	flags |= PW_STREAM_FLAG_AUTOCONNECT;
 
 	pw_stream_connect(obs_pw_stream->stream, PW_DIRECTION_INPUT, pipewire_node, flags, params, n_params);
 
@@ -1818,10 +1910,13 @@ void obs_pipewire_stream_destroy(obs_pipewire_stream *obs_pw_stream)
 	pw_thread_loop_unlock(obs_pw_stream->obs_pw->thread_loop);
 
 	if (obs_pw_stream->name)
-		free(obs_pw_stream->name);
+		bfree(obs_pw_stream->name);
+	if (obs_pw_stream->target)
+		bfree(obs_pw_stream->target);
 
 	clear_format_info(obs_pw_stream);
 	pthread_mutex_destroy(&obs_pw_stream->lock);
+	pthread_mutex_destroy(&obs_pw_stream->cfg_lock);
 
 	bfree(obs_pw_stream);
 }
@@ -1872,14 +1967,26 @@ void obs_pipewire_stream_set_name(obs_pipewire_stream *obs_pw_stream, const char
 {
 	obs_pipewire *obs_pw = obs_pw_stream->obs_pw;
 
-	pthread_mutex_lock(&obs_pw_stream->lock);
-
+	pthread_mutex_lock(&obs_pw_stream->cfg_lock);
 	if (obs_pw_stream->name)
-		free(obs_pw_stream->name);
-	obs_pw_stream->name = strdup(name);
-
-	pthread_mutex_unlock(&obs_pw_stream->lock);
+		bfree(obs_pw_stream->name);
+	obs_pw_stream->name = bstrdup(name);
+	pthread_mutex_unlock(&obs_pw_stream->cfg_lock);
 
 	/* Signal to rename */
 	pw_loop_signal_event(pw_thread_loop_get_loop(obs_pw->thread_loop), obs_pw_stream->rename);
+}
+
+void obs_pipewire_stream_set_target(obs_pipewire_stream *obs_pw_stream, const char *target)
+{
+	obs_pipewire *obs_pw = obs_pw_stream->obs_pw;
+
+	pthread_mutex_lock(&obs_pw_stream->cfg_lock);
+	if (obs_pw_stream->target)
+		bfree(obs_pw_stream->target);
+	obs_pw_stream->target = bstrdup(target ? target : "<none>");
+	pthread_mutex_unlock(&obs_pw_stream->cfg_lock);
+
+	/* Signal to set target */
+	pw_loop_signal_event(pw_thread_loop_get_loop(obs_pw->thread_loop), obs_pw_stream->set_target);
 }
