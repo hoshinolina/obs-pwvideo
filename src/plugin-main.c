@@ -434,8 +434,8 @@ static void populate_target_list(struct pipewire_video_capture *capture, obs_pro
 			}
 		} else {
 			char *label, *serial;
-			asprintf(&label, "%s (%d)", tgt->friendly_name, tgt->id);
-			asprintf(&serial, "#%" PRId64, tgt->serial);
+			assert(asprintf(&label, "%s (%d)", tgt->friendly_name, tgt->id) > 0);
+			assert(asprintf(&serial, "#%" PRId64, tgt->serial) > 0);
 			blog(LOG_INFO, "[pwvideo] Add string %s %s", label, serial);
 			prop_idx = obs_property_list_add_string(list, label, serial);
 
