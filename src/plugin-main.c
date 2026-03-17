@@ -235,8 +235,8 @@ static void on_registry_global_remove_cb(void *user_data, uint32_t id)
 		}
 		if (dupe_tgt >= 0) {
 			struct pipewire_target *p = &capture->targets.array[dupe_tgt];
-			blog(LOG_WARNING, "[pwvideo] Target name %s is now unique (%d/%" PRId64 ")", p->node_name,
-			     p->id, p->serial);
+			blog(LOG_INFO, "[pwvideo] Target name %s is now unique (%d/%" PRId64 ")", p->node_name, p->id,
+			     p->serial);
 			p->unique = true;
 			// If the current target is going away, and was duplicate, *and* was targeted as unique,
 			// then retarget to the new remaining unique. This follows what WirePlumber will do.
@@ -247,9 +247,9 @@ static void on_registry_global_remove_cb(void *user_data, uint32_t id)
 	}
 
 	if (capture->cur_target == (ssize_t)idx && tgt->unique) {
-		tgt->id = PW_ID_ANY;
 		blog(LOG_INFO, "[pwvideo] Current target %s went away (%d/%" PRId64 ")", tgt->node_name, tgt->id,
 		     tgt->serial);
+		tgt->id = PW_ID_ANY;
 	} else {
 		if (capture->cur_target == (ssize_t)idx)
 			capture->cur_target = -1;
