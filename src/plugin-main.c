@@ -180,8 +180,7 @@ static void on_registry_global_cb(void *user_data, uint32_t id, uint32_t permiss
 			// Source came back, restore it in-place
 			free_target(tgt);
 			*tgt = target;
-			pthread_mutex_unlock(&capture->targets_lock);
-			return;
+			goto ret;
 		} else if (!strcmp(tgt->node_name, node_name)) {
 			blog(LOG_INFO, "[pwvideo] New target name %s is not unique (id %d, serial %" PRId64 " matches)",
 			     node_name, tgt->id, tgt->serial);
@@ -192,6 +191,7 @@ static void on_registry_global_cb(void *user_data, uint32_t id, uint32_t permiss
 
 	da_push_back(capture->targets, &target);
 
+ret:
 	pthread_mutex_unlock(&capture->targets_lock);
 
 	obs_source_update_properties(capture->source);
