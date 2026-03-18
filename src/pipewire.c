@@ -1606,6 +1606,8 @@ obs_pipewire_stream *obs_pipewire_connect_stream(obs_pipewire *obs_pw, obs_sourc
 
 	set_name_properties(connect_info->stream_properties, obs_pw_stream->name);
 
+	pw_properties_set(connect_info->stream_properties, PW_KEY_NODE_EXCLUSIVE, "true");
+
 	if (pipewire_node == SPA_ID_INVALID) {
 		pw_properties_set(connect_info->stream_properties, PW_KEY_TARGET_OBJECT, obs_pw_stream->target);
 		pw_properties_set(connect_info->stream_properties, PW_KEY_NODE_AUTOCONNECT,
