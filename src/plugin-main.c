@@ -433,7 +433,7 @@ static void populate_target_list(struct pipewire_video_capture *capture, obs_pro
 				obs_data_set_string(obs_source_get_settings(capture->source), "target", tgt->node_name);
 			}
 		} else {
-			char *label, *serial;
+			char *label = NULL, *serial = NULL;
 			assert(asprintf(&label, "%s (%d)", tgt->friendly_name, tgt->id) > 0);
 			assert(asprintf(&serial, "#%" PRId64, tgt->serial) > 0);
 			blog(LOG_INFO, "[pwvideo] Add string %s %s", label, serial);
