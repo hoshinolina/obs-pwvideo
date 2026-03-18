@@ -142,11 +142,13 @@ struct _obs_pipewire_stream {
 	obs_pipewire *obs_pw;
 	struct spa_list link;
 	obs_source_t *source;
+	pthread_mutex_t state_lock;
 	pthread_mutex_t cfg_lock;
 	char *name;
 	char *target;
 
 	struct pw_stream *stream;
+	bool stream_ready;
 	struct spa_hook stream_listener;
 	struct spa_source *reneg;
 	struct spa_source *rename;
@@ -261,8 +263,11 @@ static struct present_buffer *get_buffer(obs_pipewire_stream *obs_pw_stream)
 		return NULL;
 
 	if (obs_pw_stream->new_frame) {
-		/* NB: This should be thread safe as far as I can tell */
-		pw_stream_trigger_process(obs_pw_stream->stream);
+		/* NB: This is thread safe but not across stream state changes (disconnect) */
+		pthread_mutex_lock(&obs_pw_stream->state_lock);
+		if (obs_pw_stream->stream_ready)
+			pw_stream_trigger_process(obs_pw_stream->stream);
+		pthread_mutex_unlock(&obs_pw_stream->state_lock);
 
 		if (obs_pw_stream->buffers[0].state != BUFFER_FREE) {
 			/* Note: gs_flush() must have been called at some point since last render,
@@ -749,6 +754,10 @@ static void set_target(void *data, uint64_t expirations)
 	pw_properties_set(props, PW_KEY_NODE_AUTOCONNECT, obs_pw_stream->target ? "true" : "false");
 	pthread_mutex_unlock(&obs_pw_stream->cfg_lock);
 
+	pthread_mutex_lock(&obs_pw_stream->state_lock);
+	obs_pw_stream->stream_ready = false;
+	pthread_mutex_unlock(&obs_pw_stream->state_lock);
+
 	pw_thread_loop_lock(obs_pw_stream->obs_pw->thread_loop);
 
 	if (!obs_pw_stream->stream) {
@@ -778,6 +787,10 @@ static void set_target(void *data, uint64_t expirations)
 	pw_stream_connect(obs_pw_stream->stream, PW_DIRECTION_INPUT, SPA_ID_INVALID, flags, params, n_params);
 
 	pw_thread_loop_unlock(obs_pw_stream->obs_pw->thread_loop);
+
+	pthread_mutex_lock(&obs_pw_stream->state_lock);
+	obs_pw_stream->stream_ready = true;
+	pthread_mutex_unlock(&obs_pw_stream->state_lock);
 }
 
 /* ------------------------------------------------- */
@@ -1606,6 +1619,7 @@ obs_pipewire_stream *obs_pipewire_connect_stream(obs_pipewire *obs_pw, obs_sourc
 	obs_pw_stream->resolution.set = connect_info->video.resolution != NULL;
 	pthread_mutex_init(&obs_pw_stream->lock, NULL);
 	pthread_mutex_init(&obs_pw_stream->cfg_lock, NULL);
+	pthread_mutex_init(&obs_pw_stream->state_lock, NULL);
 
 	set_name_properties(connect_info->stream_properties, obs_pw_stream->name);
 
@@ -1677,6 +1691,10 @@ obs_pipewire_stream *obs_pipewire_connect_stream(obs_pipewire *obs_pw, obs_sourc
 	bfree(params);
 
 	spa_list_append(&obs_pw->streams, &obs_pw_stream->link);
+
+	pthread_mutex_lock(&obs_pw_stream->state_lock);
+	obs_pw_stream->stream_ready = true;
+	pthread_mutex_unlock(&obs_pw_stream->state_lock);
 
 	return obs_pw_stream;
 }
@@ -1879,6 +1897,10 @@ void obs_pipewire_stream_destroy(obs_pipewire_stream *obs_pw_stream)
 	if (!obs_pw_stream)
 		return;
 
+	pthread_mutex_lock(&obs_pw_stream->state_lock);
+	obs_pw_stream->stream_ready = false;
+	pthread_mutex_unlock(&obs_pw_stream->state_lock);
+
 	output_flags = obs_source_get_output_flags(obs_pw_stream->source);
 	if (output_flags & OBS_SOURCE_ASYNC_VIDEO)
 		obs_source_output_video(obs_pw_stream->source, NULL);
@@ -1907,6 +1929,7 @@ void obs_pipewire_stream_destroy(obs_pipewire_stream *obs_pw_stream)
 	clear_format_info(obs_pw_stream);
 	pthread_mutex_destroy(&obs_pw_stream->lock);
 	pthread_mutex_destroy(&obs_pw_stream->cfg_lock);
+	pthread_mutex_destroy(&obs_pw_stream->state_lock);
 
 	bfree(obs_pw_stream);
 }
