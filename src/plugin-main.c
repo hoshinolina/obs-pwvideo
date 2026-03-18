@@ -437,8 +437,10 @@ static void populate_target_list(struct pipewire_video_capture *capture, obs_pro
 			char *label = NULL, *serial = NULL;
 			int ret = asprintf(&label, "%s (%d)", tgt->friendly_name, tgt->id);
 			assert(ret > 0);
+			UNUSED_PARAMETER(ret); // Release builds need this...
 			ret = asprintf(&serial, "#%" PRId64, tgt->serial);
 			assert(ret > 0);
+			UNUSED_PARAMETER(ret);
 			blog(LOG_INFO, "[pwvideo] Add string %s %s", label, serial);
 			prop_idx = obs_property_list_add_string(list, label, serial);
 
