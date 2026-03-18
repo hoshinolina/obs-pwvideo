@@ -33,7 +33,6 @@
 //#include <glad/glad.h>
 #include <libdrm/drm_fourcc.h>
 #include <pipewire/pipewire.h>
-#include <pipewire/extensions/metadata.h>
 #include <spa/param/video/format-utils.h>
 #include <spa/buffer/meta.h>
 #include <spa/debug/format.h>
@@ -95,10 +94,7 @@ struct _obs_pipewire {
 	struct obs_pw_version server_version;
 
 	struct pw_registry *registry;
-	struct spa_hook user_registry_listener;
 	struct spa_hook registry_listener;
-
-	struct pw_metadata *metadata;
 
 	struct spa_list streams;
 };
@@ -233,11 +229,6 @@ static void teardown_pipewire(obs_pipewire *obs_pw)
 	if (obs_pw->thread_loop) {
 		obs_pipewire_roundtrip(obs_pw);
 		pw_thread_loop_stop(obs_pw->thread_loop);
-	}
-
-	if (obs_pw->metadata) {
-		pw_proxy_destroy((struct pw_proxy *)obs_pw->metadata);
-		obs_pw->metadata = NULL;
 	}
 
 	if (obs_pw->registry) {
@@ -738,26 +729,52 @@ static void set_target(void *data, uint64_t expirations)
 	UNUSED_PARAMETER(expirations);
 	obs_pipewire_stream *obs_pw_stream = (obs_pipewire_stream *)data;
 	obs_pipewire *obs_pw = obs_pw_stream->obs_pw;
+	struct spa_pod_builder pod_builder;
+	const struct spa_pod **params = NULL;
+	uint32_t n_params;
+	uint8_t params_buffer[4096];
+	struct pw_properties *props;
+	enum pw_stream_flags flags = PW_STREAM_FLAG_MAP_BUFFERS;
 
-	pw_thread_loop_lock(obs_pw->thread_loop);
-	uint32_t node_id = pw_stream_get_node_id(obs_pw_stream->stream);
-
-	if (node_id == SPA_ID_INVALID) {
+	/* NB: NULL NULL to silence a spurious compiler warning */
+	props = pw_properties_new(NULL, NULL);
+	if (!props) {
 		pw_thread_loop_unlock(obs_pw->thread_loop);
+		blog(LOG_ERROR, "Failed to alloc target properties");
 		return;
 	}
 
 	pthread_mutex_lock(&obs_pw_stream->cfg_lock);
-	char *tgt = obs_pw_stream->target;
-	obs_pw_stream->target = NULL;
+	pw_properties_set(props, PW_KEY_TARGET_OBJECT, obs_pw_stream->target);
+	pw_properties_set(props, PW_KEY_NODE_AUTOCONNECT, obs_pw_stream->target ? "true" : "false");
 	pthread_mutex_unlock(&obs_pw_stream->cfg_lock);
 
-	if (tgt)
-		pw_metadata_set_property(obs_pw->metadata, node_id, PW_KEY_TARGET_OBJECT, SPA_TYPE_INFO_BASE "Id", tgt);
+	pw_thread_loop_lock(obs_pw_stream->obs_pw->thread_loop);
 
-	pw_thread_loop_unlock(obs_pw->thread_loop);
+	if (!obs_pw_stream->stream) {
+		pw_properties_free(props);
+		pw_thread_loop_unlock(obs_pw_stream->obs_pw->thread_loop);
+		return;
+	}
 
-	bfree(tgt);
+	pw_stream_disconnect(obs_pw_stream->stream);
+	pw_stream_update_properties(obs_pw_stream->stream, &props->dict);
+	pw_properties_free(props);
+
+	/* Stream parameters */
+	pod_builder = SPA_POD_BUILDER_INIT(params_buffer, sizeof(params_buffer));
+
+	obs_get_video_info(&obs_pw_stream->video_info);
+
+	if (!build_format_params(obs_pw_stream, &pod_builder, &params, &n_params)) {
+		blog(LOG_ERROR, "Failed to build format params");
+		pw_thread_loop_unlock(obs_pw->thread_loop);
+		return;
+	}
+
+	pw_stream_connect(obs_pw_stream->stream, PW_DIRECTION_INPUT, SPA_ID_INVALID, flags, params, n_params);
+
+	pw_thread_loop_unlock(obs_pw_stream->obs_pw->thread_loop);
 }
 
 /* ------------------------------------------------- */
@@ -1396,15 +1413,6 @@ static void on_state_changed_cb(void *user_data, enum pw_stream_state old, enum 
 
 	blog(LOG_INFO, "[pipewire] Stream %p state: \"%s\" (error: %s)", obs_pw_stream->stream,
 	     pw_stream_state_as_string(state), error ? error : "none");
-
-	// Make sure we update the target if the stream was just created
-	pthread_mutex_lock(&obs_pw_stream->cfg_lock);
-	bool do_target = !!obs_pw_stream->target;
-	pthread_mutex_unlock(&obs_pw_stream->cfg_lock);
-
-	if (do_target)
-		pw_loop_signal_event(pw_thread_loop_get_loop(obs_pw_stream->obs_pw->thread_loop),
-				     obs_pw_stream->set_target);
 }
 
 static void on_add_buffer(void *user_data, struct pw_buffer *pwbuffer)
@@ -1483,35 +1491,6 @@ static const struct pw_core_events core_events = {
 	.error = on_core_error_cb,
 };
 
-static void on_registry_global_cb(void *user_data, uint32_t id, uint32_t permissions, const char *type,
-				  uint32_t version, const struct spa_dict *props)
-{
-	UNUSED_PARAMETER(permissions);
-	UNUSED_PARAMETER(version);
-
-	obs_pipewire *obs_pw = user_data;
-
-	if (!spa_streq(type, PW_TYPE_INTERFACE_Metadata))
-		return;
-
-	if (props == NULL)
-		return;
-
-	const char *name = spa_dict_lookup(props, PW_KEY_METADATA_NAME);
-	if (name == NULL)
-		return;
-
-	if (!spa_streq(name, "default"))
-		return;
-
-	obs_pw->metadata = pw_registry_bind(obs_pw->registry, id, type, PW_VERSION_METADATA, 0);
-}
-
-static const struct pw_registry_events pw_registry_events = {
-	PW_VERSION_REGISTRY_EVENTS,
-	.global = on_registry_global_cb,
-};
-
 /* obs_source_info methods */
 
 obs_pipewire *obs_pipewire_connect(const struct pw_registry_events *registry_events, void *user_data)
@@ -1558,11 +1537,11 @@ obs_pipewire *obs_pipewire_connect_fd(int pipewire_fd, const struct pw_registry_
 	pw_thread_loop_wait(obs_pw->thread_loop);
 
 	/* Registry */
-	obs_pw->registry = pw_core_get_registry(obs_pw->core, PW_VERSION_REGISTRY, 0);
-	blog(LOG_INFO, "[pipewire] Created registry %p", obs_pw->registry);
-	pw_registry_add_listener(obs_pw->registry, &obs_pw->registry_listener, &pw_registry_events, obs_pw);
-	if (registry_events)
-		pw_registry_add_listener(obs_pw->registry, &obs_pw->user_registry_listener, registry_events, user_data);
+	if (registry_events) {
+		obs_pw->registry = pw_core_get_registry(obs_pw->core, PW_VERSION_REGISTRY, 0);
+		pw_registry_add_listener(obs_pw->registry, &obs_pw->registry_listener, registry_events, user_data);
+		blog(LOG_INFO, "[pipewire] Created registry %p", obs_pw->registry);
+	}
 
 	pw_thread_loop_unlock(obs_pw->thread_loop);
 
@@ -1615,7 +1594,7 @@ obs_pipewire_stream *obs_pipewire_connect_stream(obs_pipewire *obs_pw, obs_sourc
 
 	obs_pw_stream = bzalloc(sizeof(obs_pipewire_stream));
 	obs_pw_stream->name = bstrdup(connect_info->stream_name);
-	obs_pw_stream->target = bstrdup(connect_info->stream_target ? connect_info->stream_target : "<none>");
+	obs_pw_stream->target = bstrdup(connect_info->stream_target);
 	obs_pw_stream->obs_pw = obs_pw;
 	obs_pw_stream->source = source;
 	obs_pw_stream->cursor_visible = connect_info->screencast.cursor_visible;
@@ -1628,7 +1607,10 @@ obs_pipewire_stream *obs_pipewire_connect_stream(obs_pipewire *obs_pw, obs_sourc
 	set_name_properties(connect_info->stream_properties, obs_pw_stream->name);
 
 	if (pipewire_node == SPA_ID_INVALID) {
-		pw_properties_set(connect_info->stream_properties, PW_KEY_TARGET_OBJECT, "<none>");
+		pw_properties_set(connect_info->stream_properties, PW_KEY_TARGET_OBJECT, obs_pw_stream->target);
+		pw_properties_set(connect_info->stream_properties, PW_KEY_NODE_AUTOCONNECT,
+				  obs_pw_stream->target ? "true" : "false");
+
 		// Do not try a random video device if source not found
 		pw_properties_set(connect_info->stream_properties, "node.dont-fallback", "true");
 		// Do not destroy the node if source not found
@@ -1671,13 +1653,16 @@ obs_pipewire_stream *obs_pipewire_connect_stream(obs_pipewire *obs_pw, obs_sourc
 	obs_get_video_info(&obs_pw_stream->video_info);
 
 	if (!build_format_params(obs_pw_stream, &pod_builder, &params, &n_params)) {
+		blog(LOG_ERROR, "Failed to build format params");
 		pw_thread_loop_unlock(obs_pw->thread_loop);
 		bfree(obs_pw_stream);
 		return NULL;
 	}
 
 	enum pw_stream_flags flags = PW_STREAM_FLAG_MAP_BUFFERS;
-	flags |= PW_STREAM_FLAG_AUTOCONNECT;
+
+	if (pipewire_node != SPA_ID_INVALID)
+		flags |= PW_STREAM_FLAG_AUTOCONNECT;
 
 	pw_stream_connect(obs_pw_stream->stream, PW_DIRECTION_INPUT, pipewire_node, flags, params, n_params);
 
@@ -1984,7 +1969,7 @@ void obs_pipewire_stream_set_target(obs_pipewire_stream *obs_pw_stream, const ch
 	pthread_mutex_lock(&obs_pw_stream->cfg_lock);
 	if (obs_pw_stream->target)
 		bfree(obs_pw_stream->target);
-	obs_pw_stream->target = bstrdup(target ? target : "<none>");
+	obs_pw_stream->target = bstrdup(target);
 	pthread_mutex_unlock(&obs_pw_stream->cfg_lock);
 
 	/* Signal to set target */
