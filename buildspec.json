@@ -13,7 +13,7 @@
     },
     "name": "obs-pwvideo",
     "displayName": "OBS PipeWire Video Source",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "author": "Hoshino Lina",
     "website": "https://github.com/hoshinolina/obs-pwvideo",
     "email": "lina@lina.yt"
