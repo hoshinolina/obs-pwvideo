@@ -757,6 +757,9 @@ static void set_target(void *data, uint64_t expirations)
 		return;
 	}
 
+	clear_format_info(obs_pw_stream);
+	init_format_info(obs_pw_stream);
+
 	pw_stream_disconnect(obs_pw_stream->stream);
 	pw_stream_update_properties(obs_pw_stream->stream, &props->dict);
 	pw_properties_free(props);
