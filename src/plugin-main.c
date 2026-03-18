@@ -431,6 +431,7 @@ static void populate_target_list(struct pipewire_video_capture *capture, obs_pro
 			if (tgt->id != PW_ID_ANY && capture->cur_target == (ssize_t)i) {
 				blog(LOG_INFO, "[pwvideo] Retarget to %s", tgt->node_name);
 				obs_data_set_string(obs_source_get_settings(capture->source), "target", tgt->node_name);
+				update_pipewire_target(capture);
 			}
 		} else {
 			char *label = NULL, *serial = NULL;
@@ -445,6 +446,7 @@ static void populate_target_list(struct pipewire_video_capture *capture, obs_pro
 			if (capture->cur_target == (ssize_t)i && tgt->id != PW_ID_ANY) {
 				blog(LOG_INFO, "[pwvideo] Retarget to %s", serial);
 				obs_data_set_string(obs_source_get_settings(capture->source), "target", serial);
+				update_pipewire_target(capture);
 			}
 			free(label);
 			free(serial);
