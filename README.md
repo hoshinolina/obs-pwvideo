@@ -15,7 +15,7 @@ This fork also serves as a testbed for improvements to the OBS PipeWire code, wh
 
 * No portals used/required (this still works in Flatpak as the Flatpak already has PipeWire permissions to support the JACK source)
 * Improved PipeWire video support (bugfixes, support for double buffering, and lazy mode for pull-based frame pacing)
-* Support for selecting arbitrary PipeWire video sources and auto-reconnect without user action (WIP)
+* Support for selecting arbitrary PipeWire video sources and auto-reconnect without user action
 
 ## Why not portals?
 
