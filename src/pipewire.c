@@ -262,6 +262,9 @@ static struct present_buffer *get_buffer(obs_pipewire_stream *obs_pw_stream)
 	if (!obs_in_task_thread(OBS_TASK_GRAPHICS))
 		return NULL;
 
+	// Even if we are in the graphics thread, we might not have a context.
+	obs_enter_graphics();
+
 	if (obs_pw_stream->new_frame) {
 		/* NB: This is thread safe but not across stream state changes (disconnect) */
 		pthread_mutex_lock(&obs_pw_stream->state_lock);
@@ -286,8 +289,10 @@ static struct present_buffer *get_buffer(obs_pipewire_stream *obs_pw_stream)
 
 	struct present_buffer *pb = &obs_pw_stream->presenting_buffer;
 
-	if (pb->state == BUFFER_FREE)
+	if (pb->state == BUFFER_FREE) {
+		obs_leave_graphics();
 		return NULL;
+	}
 
 	if (pb->state == BUFFER_FULL)
 		pb->state = BUFFER_PRESENTING;
@@ -302,6 +307,8 @@ static struct present_buffer *get_buffer(obs_pipewire_stream *obs_pw_stream)
 	}
 	obs_pw_stream->transform = pb->transform;
 	pthread_mutex_unlock(&obs_pw_stream->lock);
+
+	obs_leave_graphics();
 
 	return pb;
 }
