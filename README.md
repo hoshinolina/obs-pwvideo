@@ -11,6 +11,10 @@ It is designed to work with apps that can send video using PipeWire, such as tho
 
 This fork also serves as a testbed for improvements to the OBS PipeWire code, which can hopefully be upstreamed over time.
 
+## MAINTENANCE NOTE
+
+This repository is maintained on a best-effort, personal basis. I use it myself and I will fix issues I run into, but I no longer plan to invest time for use cases outside my own.
+
 ## Differences with the built-in OBS PipeWire support
 
 * No portals used/required (this still works in Flatpak as the Flatpak already has PipeWire permissions to support the JACK source)
