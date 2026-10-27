@@ -8,6 +8,7 @@ project(${_name} VERSION ${_version})
 
 option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" OFF)
 option(ENABLE_QT "Use Qt functionality" OFF)
+option(ENABLE_TESTS "Build target-filter tests" OFF)
 
 include(compilerconfig)
 include(defaults)
@@ -42,10 +43,17 @@ endif()
 
 target_sources(
   ${CMAKE_PROJECT_NAME}
-  PRIVATE src/plugin-main.c src/pipewire.c src/pipewire.h src/formats.c src/formats.h
+  PRIVATE src/plugin-main.c src/pipewire.c src/pipewire.h src/formats.c src/formats.h src/target-filter.h
 )
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${libdrm_include_directories})
 
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE PipeWire::PipeWire)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
+
+if(ENABLE_TESTS)
+  enable_testing()
+  add_executable(test-target-filter tests/target-filter.c)
+  target_include_directories(test-target-filter PRIVATE src)
+  add_test(NAME target-filter COMMAND test-target-filter)
+endif()

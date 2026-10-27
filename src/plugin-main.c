@@ -28,6 +28,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <util/dstr.h>
 #include <pthread.h>
 #include "pipewire.h"
+#include "target-filter.h"
 
 #if !PW_CHECK_VERSION(1, 2, 7)
 #define PW_KEY_NODE_SUPPORTS_REQUEST        "node.supports-request"
@@ -46,6 +47,7 @@ struct pipewire_target {
 	char *node_name;
 	char *friendly_name;
 	bool unique;
+	bool video_source;
 };
 
 struct pipewire_video_capture {
@@ -54,6 +56,7 @@ struct pipewire_video_capture {
 
 	uint32_t pipewire_node;
 	bool double_buffering;
+	bool show_video_sources;
 
 	obs_pipewire *obs_pw;
 	obs_pipewire_stream *obs_pw_stream;
@@ -129,22 +132,10 @@ static void on_registry_global_cb(void *user_data, uint32_t id, uint32_t permiss
 	media_class = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
 	media_role = spa_dict_lookup(props, PW_KEY_MEDIA_ROLE);
 
-	/*
-	 * We enumerate targets for obs-pwvideo by requiring:
-	 *
-	 * media.type == "Video"
-	 * media.class == "Stream/Output/Video"
-	 * media.role == "Production" or unset (backwards compat)
-	 *
-	 * This filters out physical devices.
-	 * If the media.type requirement is relaxed, this would pick
-	 * up stuff like KWin/mutter screencasts. However, this is
-	 * mostly useful only for testing right now.
-	 */
-
-	if ((!media_type || strcmp(media_type, "Video")) ||
-	    (!media_class || strcmp(media_class, "Stream/Output/Video")) ||
-	    (media_role && strcmp(media_role, "Production")))
+	/* Track additional sources even when hidden, so enabling the option
+	 * updates the picker without waiting for PipeWire to reannounce them. */
+	target.video_source = is_video_source(media_class);
+	if (!target.video_source && !is_production_video_stream(media_type, media_class, media_role))
 		return;
 
 	serial_str = spa_dict_lookup(props, PW_KEY_OBJECT_SERIAL);
@@ -289,16 +280,41 @@ void pipewire_video_rename(void *param, calldata_t *data)
 
 static void *pipewire_video_capture_create(obs_data_t *settings, obs_source_t *source)
 {
-	UNUSED_PARAMETER(settings);
 	struct pipewire_video_capture *capture;
 	struct obs_pipwire_connect_stream_info connect_info;
 
 	capture = bzalloc(sizeof(struct pipewire_video_capture));
 	capture->source = source;
 	capture->double_buffering = obs_data_get_bool(settings, "DoubleBuffering");
+	capture->show_video_sources = obs_data_get_bool(settings, "ShowVideoSources");
+	pthread_mutex_init(&capture->targets_lock, NULL);
+	da_init(capture->targets);
+	capture->cur_target = -1;
+
+	/* Initialize target state before connecting: registry callbacks can run
+	 * on the PipeWire thread as soon as the connection is established. */
+	char *target = bstrdup(obs_data_get_string(settings, "target"));
+	bool has_target = target && target[0] && target[0] != '#';
+	if (has_target) {
+		struct pipewire_target *tgt = da_push_back_new(capture->targets);
+		memset(tgt, 0, sizeof(*tgt));
+		tgt->friendly_name = bstrdup(target);
+		tgt->node_name = bstrdup(target);
+		tgt->unique = true;
+		tgt->id = PW_ID_ANY;
+		capture->cur_target = 0;
+		capture->cur_unique = true;
+	} else {
+		obs_data_set_string(settings, "target", NULL);
+	}
 
 	capture->obs_pw = obs_pipewire_connect(&registry_events, capture);
 	if (!capture->obs_pw) {
+		bfree(target);
+		for (size_t i = 0; i < capture->targets.num; i++)
+			free_target(&capture->targets.array[i]);
+		da_free(capture->targets);
+		pthread_mutex_destroy(&capture->targets_lock);
 		bfree(capture);
 		return NULL;
 	}
@@ -310,6 +326,7 @@ static void *pipewire_video_capture_create(obs_data_t *settings, obs_source_t *s
 
 	connect_info = (struct obs_pipwire_connect_stream_info){
 		.stream_name = obs_source_get_name(source),
+		.stream_target = has_target ? target : NULL,
 		// clang-format off
 		.stream_properties = pw_properties_new(
 			PW_KEY_NODE_NAME, node_name.array,
@@ -329,27 +346,9 @@ static void *pipewire_video_capture_create(obs_data_t *settings, obs_source_t *s
 
 	dstr_free(&node_name);
 
-	const char *target = obs_data_get_string(settings, "target");
-
-	da_init(capture->targets);
-	if (target && target[0] && target[0] != '#') {
-		connect_info.stream_target = target;
-
-		struct pipewire_target *tgt = da_push_back_new(capture->targets);
-		memset(tgt, 0, sizeof(*tgt));
-		tgt->friendly_name = bstrdup(target);
-		tgt->node_name = bstrdup(target);
-		tgt->unique = true;
-		tgt->id = PW_ID_ANY;
-		capture->cur_target = 0;
-		capture->cur_unique = true;
-	} else {
-		obs_data_set_string(settings, "target", NULL);
-		capture->cur_target = -1;
-	}
-
 	capture->obs_pw_stream =
 		obs_pipewire_connect_stream(capture->obs_pw, capture->source, SPA_ID_INVALID, &connect_info);
+	bfree(target);
 
 	signal_handler_t *sh = obs_source_get_signal_handler(source);
 	signal_handler_connect(sh, "rename", pipewire_video_rename, capture);
@@ -379,6 +378,7 @@ static void pipewire_video_capture_destroy(void *data)
 		free_target(tgt);
 	}
 	da_free(capture->targets);
+	pthread_mutex_destroy(&capture->targets_lock);
 
 	bfree(capture);
 }
@@ -386,6 +386,7 @@ static void pipewire_video_capture_destroy(void *data)
 static void pipewire_video_capture_get_defaults(obs_data_t *settings)
 {
 	obs_data_set_default_string(settings, "target", NULL);
+	obs_data_set_default_bool(settings, "ShowVideoSources", false);
 }
 
 static ssize_t find_target(struct pipewire_video_capture *capture, const char *target_name)
@@ -410,7 +411,7 @@ static ssize_t find_target(struct pipewire_video_capture *capture, const char *t
 	return -1;
 }
 
-static void populate_target_list(struct pipewire_video_capture *capture, obs_property_t *list)
+static void populate_target_list(struct pipewire_video_capture *capture, obs_property_t *list, bool retarget)
 {
 	obs_property_list_clear(list);
 
@@ -422,13 +423,16 @@ static void populate_target_list(struct pipewire_video_capture *capture, obs_pro
 
 	for (size_t i = 0; i < capture->targets.num; i++) {
 		struct pipewire_target *tgt = &capture->targets.array[i];
+		// Keep the current selection visible even if the option is disabled.
+		if (tgt->video_source && !capture->show_video_sources && capture->cur_target != (ssize_t)i)
+			continue;
 		size_t prop_idx;
 		if (tgt->unique) {
 			blog(LOG_INFO, "[pwvideo] Add string %s %s", tgt->friendly_name, tgt->node_name);
 			prop_idx = obs_property_list_add_string(list, tgt->friendly_name, tgt->node_name);
 
 			/* If the props window is open, migrate to unique target */
-			if (tgt->id != PW_ID_ANY && capture->cur_target == (ssize_t)i) {
+			if (retarget && tgt->id != PW_ID_ANY && capture->cur_target == (ssize_t)i) {
 				blog(LOG_INFO, "[pwvideo] Retarget to %s", tgt->node_name);
 				obs_data_set_string(obs_source_get_settings(capture->source), "target", tgt->node_name);
 				update_pipewire_target(capture);
@@ -445,7 +449,7 @@ static void populate_target_list(struct pipewire_video_capture *capture, obs_pro
 			prop_idx = obs_property_list_add_string(list, label, serial);
 
 			/* If the props window is open, migrate to per-serial target or drop if it's gone */
-			if (capture->cur_target == (ssize_t)i && tgt->id != PW_ID_ANY) {
+			if (retarget && capture->cur_target == (ssize_t)i && tgt->id != PW_ID_ANY) {
 				blog(LOG_INFO, "[pwvideo] Retarget to %s", serial);
 				obs_data_set_string(obs_source_get_settings(capture->source), "target", serial);
 				update_pipewire_target(capture);
@@ -513,10 +517,24 @@ static bool source_selected(void *data, obs_properties_t *props, obs_property_t 
 	capture->cur_target = idx;
 
 	update_pipewire_target(capture);
-	populate_target_list(capture, property);
+	populate_target_list(capture, property, true);
 	pthread_mutex_unlock(&capture->targets_lock);
 
 	return refresh;
+}
+
+static bool show_sources_changed(void *data, obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(property);
+	struct pipewire_video_capture *capture = data;
+	obs_property_t *source_list = obs_properties_get(props, "target");
+
+	pthread_mutex_lock(&capture->targets_lock);
+	capture->show_video_sources = obs_data_get_bool(settings, "ShowVideoSources");
+	if (source_list)
+		populate_target_list(capture, source_list, false);
+	pthread_mutex_unlock(&capture->targets_lock);
+	return true;
 }
 
 static obs_properties_t *pipewire_video_capture_get_properties(void *data)
@@ -525,12 +543,15 @@ static obs_properties_t *pipewire_video_capture_get_properties(void *data)
 	obs_properties_t *props;
 
 	props = obs_properties_create();
+	obs_property_t *show_sources =
+		obs_properties_add_bool(props, "ShowVideoSources", obs_module_text("ShowVideoSources"));
+	obs_property_set_modified_callback2(show_sources, show_sources_changed, capture);
 
 	obs_property_t *source_list = obs_properties_add_list(props, "target", obs_module_text("Source"),
 							      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 
 	pthread_mutex_lock(&capture->targets_lock);
-	populate_target_list(capture, source_list);
+	populate_target_list(capture, source_list, true);
 	pthread_mutex_unlock(&capture->targets_lock);
 
 	obs_property_set_modified_callback2(source_list, source_selected, capture);
@@ -547,6 +568,9 @@ static void pipewire_video_capture_update(void *data, obs_data_t *settings)
 	struct pipewire_video_capture *capture = data;
 
 	capture->double_buffering = obs_data_get_bool(settings, "DoubleBuffering");
+	pthread_mutex_lock(&capture->targets_lock);
+	capture->show_video_sources = obs_data_get_bool(settings, "ShowVideoSources");
+	pthread_mutex_unlock(&capture->targets_lock);
 
 	if (capture->obs_pw_stream)
 		obs_pipewire_stream_set_double_buffering(capture->obs_pw_stream, capture->double_buffering);

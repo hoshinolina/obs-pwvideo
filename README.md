@@ -21,6 +21,11 @@ This repository is maintained on a best-effort, personal basis. I use it myself 
 * Improved PipeWire video support (bugfixes, support for double buffering, and lazy mode for pull-based frame pacing)
 * Support for selecting arbitrary PipeWire video sources and auto-reconnect without user action
 
+By default the source picker shows production video streams. Enable **Show video
+devices and other sources** in its properties to also list `Video/Source` nodes,
+including virtual sources, cameras and some compositor screencasts. Availability
+and automatic connection depend on PipeWire permissions and session management.
+
 ## Why not portals?
 
 Portals are a great concept. Unfortunately, xdg-desktop-portal doesn't really support this use case currently, and it would require multiple changes to work well:
